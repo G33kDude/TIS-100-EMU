@@ -29,8 +29,12 @@ class TIS:
 		self.height = height
 		
 		# Set default font
-		font = tkFont.nametofont("oemfixed") # TODO: find suitable cross-platform font
-		font.configure(size=9)
+		try:
+			font = tkFont.nametofont("oemfixed")
+			font.configure(size=9)
+		except tk.TclError:
+			font = tkFont.nametofont("TkFixedFont")
+			font.configure(size=8)
 		root.option_add("*Font", font)
 		
 		# Grid for widget discovery
