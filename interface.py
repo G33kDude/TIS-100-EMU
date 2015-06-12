@@ -36,6 +36,13 @@ class TIS:
 		# Grid for widget discovery
 		self.grid = make_grid(2+self.width*2, 1+self.height*2)
 		
+		codes = (
+			("", "", "", ""),
+			("MOV 1 RIGHT", "MOV LEFT RIGHT", "OUT LEFT", ""),
+			("", "", "", ""),
+			("", "", "", "")
+		)
+		
 		# Create text boxes and buffer viewers
 		self.cores = []
 		for y in range(self.height):
@@ -57,12 +64,13 @@ class TIS:
 						self.grid[a][b] = frame
 					
 					# Create io buffer widget
-					label = tk.Label(frame, text=z[1] + "   ?")
+					label = tk.Label(frame, text=z[1] + "    ")
 					label.pack(side=z[2])
 					core[z[0]] = label
 				
 				# Add core instructions input box
 				text = tk.Text(root, width=18, height=15) # TODO: Magic numbers
+				text.insert(tk.INSERT, codes[(y-1)/2][(x-2)/2]) # TODO: Build proper importer
 				text.grid(row=y, column=x)
 				core["text"] = text
 				
@@ -80,6 +88,9 @@ class TIS:
 		self.mytis = None
 		for y, x in range_prod(self.height, self.width):
 			self.cores[y][x]["text"].configure(state=tk.NORMAL)
+			for z in IO_BUFFER_INFO:
+				textbuffer = self.cores[y][x][z[0]]
+				textbuffer.configure(text=z[1] + "    ")
 	
 	def step(self):
 		# Construct a grid of tuples representing the core instructions
@@ -103,8 +114,8 @@ class TIS:
 		
 		# Update IO buffer view
 		for y, x, z in range_prod(self.height, self.width, IO_BUFFER_INFO):
-			value = self.mytis.buffers[0][y][x][z[0]]
-			value = "  ? " if value is None else "{:4}".format(value)
+			value = self.mytis.iobuffer[y][x][z[0]]
+			value = "   ?" if value is None else "{:4}".format(value)
 			textbuffer = self.cores[y][x][z[0]]
 			textbuffer.configure(text=z[1] + value)
 	

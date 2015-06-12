@@ -20,7 +20,7 @@ DIR_FLIP = {
 
 NIL_VALUE = 0
 
-class CoreIsReading(Exception): pass
+class EndOfStep(Exception): pass
 
 def clamp(value, lower, upper):
 	return max(lower, min(upper, value))
@@ -35,14 +35,13 @@ class Core(object):
 		
 		# Disable core if it has no instructions
 		if not len(self.instructions):
-			self.cycle = self.disabled
+			self.instructions.append(["NOP"])
 		
 		self.x, self.y, self.tis = x, y, tis
 		
-		
 		self.ACC = 0
 		self.BAK = 0
-		self.line = -1
+		self.line = 0
 		self.readingFromPort = False;
 		self.writingToPort = False;
 		self.ports = {
@@ -52,24 +51,32 @@ class Core(object):
 			"RIGHT": None
 		}
 	
-	def disabled(self): pass
-	
-	def cycle(self):
-		self.current_buffer = self.tis.buffers[0]
-		if self.writingToPort:
-			iobuffer = self.current_buffer[self.y][self.x]
-			if iobuffer[self.writingToPort]: # Write buffer still full
-				return
-		elif self.readingFromPort:
-			raise CoreIsReading()
+	def step1(self):
+		self.step = 1
+		# Do reads in this step
 		
-		self.line = (self.line+1)%len(self.instructions)
+		if self.writingToPort:
+			raise EndOfStep()
+		
 		self.process(self.instructions[self.line])
+		self.line = (self.line+1)%len(self.instructions)
+	
+	def step2(self):
+		self.step = 2
+		# Do writes in this step
+		
+		if self.writingToPort:
+			iobuffer = self.tis.iobuffer[self.y][self.x]
+			if iobuffer[self.writingToPort] is None:
+				self.writingToPort = False
+				self.line = (self.line+1)%len(self.instructions)
+		else:
+			self.process(self.instructions[self.line])
 	
 	def process(self, line):
 		command = "_" + line[0]
 		if not hasattr(self, command):
-			raise NotImplementedError()
+			raise NotImplementedError(line[0])
 		getattr(self, command)(*line[1:])
 	
 	def set_value(self, name, value):
@@ -79,9 +86,11 @@ class Core(object):
 		elif name == "NIL":
 			return # Discard
 		elif name in DIR_MAP:
-			print self.x, self.y, "writing"
-			self.current_buffer[self.y][self.x][name] = value
-			self.isWriting = True
+			if self.step == 1:
+				raise EndOfStep()
+			elif self.step == 2:
+				self.tis.iobuffer[self.y][self.x][name] = value
+				self.writingToPort = name
 		else:
 			raise Exception("Unkown write destination '{}'".format(name))
 	
@@ -91,40 +100,24 @@ class Core(object):
 		elif name == "NIL":
 			return NIL_VALUE
 		elif name in DIR_MAP:
-			print self.x, self.y, "reading"
-			if self.readingFromPort:
-				print self.x, self.y, "read"
-				self.readingFromPort = False # Disable read flag
-				
+			if self.step == 1:
 				shift = DIR_MAP[name]
 				x, y = self.x+shift[0], self.y+shift[1] # Shift to other core
 				flipped = DIR_FLIP[name] # other core's output direction
-				value = self.tis.buffers[0][y][x][flipped] # Read from stage 1 buffer
-				self.tis.buffers[1][y][x][flipped] = None # Modify stage 2 buffer
+				value = self.tis.iobuffer[y][x][flipped]
+				self.tis.iobuffer[y][x][flipped] = None
+				self.readbuffer = value
+				raise EndOfStep()
+			elif self.step == 2:
+				value = self.readbuffer
+				self.readbuffer = None
+				if value is None:
+					raise EndOfStep()
 				return value
-			else:
-				self.readingFromPort = name
-				raise CoreIsReading()
 		try:
 			return int(name)
 		except TypeError:
 			raise Exception("Unkown read source '{}'".format(name))
-	
-	def finish_reading(self):
-		print self.x, self.y, "finishing reading"
-		
-		# Change current_buffer for write to output to
-		self.current_buffer = self.tis.buffers[1]
-		
-		shift = DIR_MAP[self.readingFromPort]
-		x, y = self.x+shift[0], self.y+shift[1] # Shift to other core
-		flipped = DIR_FLIP[self.readingFromPort] # Their output direction
-		
-		# Value is there to be read
-		if self.tis.buffers[0][y][x][flipped]:
-			self.process(self.instructions[self.line])
-		else:
-			return # Try again next cycle
 	
 	def _NOP(self):
 		pass
@@ -157,13 +150,16 @@ class Core(object):
 class TIS100:
 	def __init__(self, core_instructions, grid_width=4, grid_height=3):
 		self.core_instructions = core_instructions
+		self.cores = []
 		self.core_grid = []
-		self.buffers = [[], []]
+		self.iobuffer = []
 		for y in range(grid_height):
 			row = []
 			buffer_row = []
 			for x in range(grid_width):
-				row.append(Core(core_instructions[y][x], x, y, self))
+				core = Core(core_instructions[y][x], x, y, self)
+				self.cores.append(core)
+				row.append(core)
 				buffer_row.append({
 					"LEFT": None,
 					"RIGHT": None,
@@ -171,18 +167,15 @@ class TIS100:
 					"DOWN": None
 				})
 			# Don't populate both buffers, buffer0 will be copied over buffer1
-			self.buffers[0].append(buffer_row)
+			self.iobuffer.append(buffer_row)
 			self.core_grid.append(row)
 	
 	def cycle(self):
 		isReading = []
-		for row in self.core_grid:
-			for core in row:
-				try:
-					core.cycle()
-				except CoreIsReading:
-					isReading.append(core)
-		self.buffers[1] = copy.deepcopy(self.buffers[0])
-		for core in isReading: # Handling for I/O blocking
-			core.finish_reading()
-		self.buffers[0] = self.buffers[1]
+		# Step 1
+		for core in self.cores:
+			try: core.step1()
+			except EndOfStep: pass
+		for core in self.cores:
+			try: core.step2()
+			except EndOfStep: pass
